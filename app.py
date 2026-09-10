@@ -1,3 +1,6 @@
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
 import time
 from datetime import datetime, timedelta
 import requests
@@ -147,6 +150,13 @@ def run():
                 a["fired"] = True
 
         time.sleep(20)
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler)
+    server.serve_forever()
+
 
 if __name__ == "__main__":
+    threading.Thread(target=keep_alive, daemon=True).start()
     run()
+
