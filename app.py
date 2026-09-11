@@ -5,7 +5,23 @@ import time
 from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+def start_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_server, daemon=True).start()
 NTFY_TOPIC = "zishan_bradford_prayers"
 
 def send_alert(title, message):
@@ -30,24 +46,6 @@ def send_alert(title, message):
     except Exception as e:
         print(f"Phone push error: {e}")
 
-    # 2. Phone Push (ntfy app)
-    try:
-        resp = requests.post(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=message.encode("utf-8"),
-            headers={
-                "Title": title.encode("utf-8"),
-                "Priority": "high",
-                "Tags": "mosque,bell"
-            },
-            timeout=5
-        )
-        if resp.status_code == 200:
-            print(">>> Phone push delivered successfully to ntfy! <<<")
-        else:
-            print(f"ntfy status: {resp.status_code}")
-    except Exception as e:
-        print(f"Phone push error: {e}")
 
 def fetch_masjid_noor():
     """Masjidbox API with proper browser User-Agent header to avoid 403."""
