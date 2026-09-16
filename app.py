@@ -1,33 +1,39 @@
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
+import re
 import time
+import threading
 from datetime import datetime, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from bs4 import BeautifulSoup
+
+# --- 1. Keep-Alive HTTP Server (for Render & cron-job.org) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"OK")
+        self.wfile.write(b"ok")
 
     def do_HEAD(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
+
+    def log_message(self, format, *args):
+        # Silence routine ping log noise
+        return
 
 def start_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
-threading.Thread(target=start_server, daemon=True).start()
+# --- 2. Push Notification Function ---
 NTFY_TOPIC = "zishan_bradford_prayers"
 
 def send_alert(title, message):
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] PUSH SENT -> {title}: {message}")
-    
-    # Phone Push (ntfy app)
     try:
         resp = requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
@@ -37,124 +43,164 @@ def send_alert(title, message):
                 "Priority": "high",
                 "Tags": "mosque,bell"
             },
-            timeout=5
+            timeout=8
         )
         if resp.status_code == 200:
-            print(">>> Phone push delivered successfully to ntfy! <<<")
-        else:
-            print(f"ntfy status: {resp.status_code}")
+            print(">>> Push delivered to ntfy! <<<")
     except Exception as e:
-        print(f"Phone push error: {e}")
+        print(f"Push delivery error: {e}")
 
+# --- 3. Scrapers ---
 
 def fetch_masjid_noor():
-    """Masjidbox API with proper browser User-Agent header to avoid 403."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://masjidbox.com/prayer-times/masjid-noor"
-    }
+    """Fetches Masjid Noor (62 Toller Lane) live schedule via Masjidbox."""
+    times = {}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # Try the direct Masjidbox API first
     try:
-        url = "https://api.masjidbox.com/1.0/masjidbox/public/landing/masjid-noor"
+        api_url = "https://api.masjidbox.com/1.0/masjidbox/masjids/masjid-noor/prayer-times"
+        resp = requests.get(api_url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data", {}).get("today", {})
+            if data:
+                times["Fajr"] = data.get("fajr", {}).get("iqamah")
+                times["Dhuhr"] = data.get("dhuhr", {}).get("iqamah")
+                times["Asr"] = data.get("asr", {}).get("iqamah")
+                # Maghrib targets beginning/sunset so it updates daily
+                times["Maghrib"] = data.get("maghrib", {}).get("beginning") or data.get("maghrib", {}).get("iqamah")
+                times["Isha"] = data.get("isha", {}).get("iqamah")
+                if all(times.values()):
+                    return times
+    except Exception:
+        pass
+
+    # Fallback to HTML scrape on the web page
+    try:
+        url = "https://masjidbox.com/prayer-times/masjid-noor"
         resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        timetable = data.get("timetable", {}).get("today", {})
-        if timetable:
-            return {
-                "Fajr": timetable.get("fajr", {}).get("iqama", "06:00"),
-                "Dhuhr": timetable.get("dhuhr", {}).get("iqama", "13:30"),
-                "Asr": timetable.get("asr", {}).get("iqama", "18:15"),
-                "Maghrib": timetable.get("maghrib", {}).get("iqama", "19:40"),
-                "Isha": timetable.get("isha", {}).get("iqama", "21:15")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        text = soup.get_text(" ")
+        time_matches = re.findall(r"\b([0-2]?[0-9]:[0-5][0-9])\b", text)
+        if len(time_matches) >= 5:
+            # Map earliest parsed blocks to respective prayers
+            times = {
+                "Fajr": time_matches[0],
+                "Dhuhr": time_matches[1],
+                "Asr": time_matches[2],
+                "Maghrib": time_matches[3],
+                "Isha": time_matches[4]
             }
     except Exception as e:
-        print(f"Masjid Noor API error: {e}")
-    return {"Fajr": "06:00", "Dhuhr": "13:30", "Asr": "18:15", "Maghrib": "19:40", "Isha": "21:15"}
+        print(f"Error fetching Masjid Noor: {e}")
+
+    return times
 
 def fetch_masjid_umar():
-    """Masjid Umar Girlington timetable."""
+    """Scrapes Masjid Umar timetable."""
+    times = {}
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get("https://www.masjid-e-umar.com/prayer-times", headers=headers, timeout=10)
-        resp.raise_for_status()
+        url = "https://masjidumar.co.uk/"
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        now = datetime.now()
-        day_str = f"{now.day:02d}"
-        for row in soup.find_all("tr"):
-            cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-            if cells and cells[0].startswith(day_str) and len(cells) >= 11:
-                # Jama'ah times are the last 5 columns
-                return {
-                    "Fajr": cells[-5],
-                    "Dhuhr": cells[-4],
-                    "Asr": cells[-3],
-                    "Maghrib": cells[-2],
-                    "Isha": cells[-1]
-                }
+        rows = soup.find_all("tr")
+        for row in rows:
+            cols = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+            if len(cols) >= 3:
+                name = cols[0].lower()
+                if "fajr" in name:
+                    times["Fajr"] = cols[2]
+                elif "dhuhr" in name or "zuhr" in name:
+                    times["Dhuhr"] = cols[2]
+                elif "asr" in name:
+                    times["Asr"] = cols[2]
+                elif "maghrib" in name:
+                    # Target sunset/beginning for daily movement
+                    times["Maghrib"] = cols[1] if cols[1] else cols[2]
+                elif "isha" in name:
+                    times["Isha"] = cols[2]
     except Exception as e:
-        print(f"Masjid Umar error: {e}")
-    return {"Fajr": "06:00", "Dhuhr": "13:30", "Asr": "18:15", "Maghrib": "19:40", "Isha": "21:15"}
+        print(f"Error fetching Masjid Umar: {e}")
+    return times
 
-def parse_to_dt(time_str, is_pm=False):
-    today = datetime.now().date()
-    clean = time_str.strip().upper()
-    for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p", "%I:%M"):
-        try:
-            t = datetime.strptime(clean, fmt).time()
-            dt = datetime.combine(today, t)
-            if is_pm and dt.hour < 12:
-                dt += timedelta(hours=12)
-            return dt
-        except ValueError:
-            continue
-    return None
+# --- 4. Alert Builder ---
 
-def run():
-    print("Connecting...")
-    # IMMEDIATE TEST ALERT - verifies phone connection on launch
-    send_alert("🕌 Salah System Active", "Phone linked! 30-min & 15-min alerts will arrive here.")
-
-    current_date = None
+def build_alerts_for_mosque(mosque_name, prayer_dict, target_date):
     alerts = []
+    for prayer, time_str in prayer_dict.items():
+        if not time_str:
+            continue
+        try:
+            parts = str(time_str).strip().split(":")
+            hour = int(parts[0])
+            minute = int(parts[1][:2])
+
+            # Adjust standard UK afternoon prayer times to 24-hour format
+            if prayer in ["Dhuhr", "Asr", "Maghrib", "Isha"] and hour < 11:
+                hour += 12
+
+            prayer_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
+            clean_time_str = prayer_dt.strftime("%H:%M")
+
+            # 30 minutes before
+            alerts.append({
+                "dt": prayer_dt - timedelta(minutes=30),
+                "title": f"🕌🔔🕌 {prayer} in 30m ({mosque_name})",
+                "message": f"{prayer} is at {clean_time_str} at {mosque_name}.",
+                "fired": False
+            })
+            # 15 minutes before
+            alerts.append({
+                "dt": prayer_dt - timedelta(minutes=15),
+                "title": f"🕌🔔🕌 {prayer} in 15m ({mosque_name})",
+                "message": f"{prayer} is at {clean_time_str} at {mosque_name}.",
+                "fired": False
+            })
+        except Exception as e:
+            print(f"Error parsing {prayer} ({time_str}) for {mosque_name}: {e}")
+            continue
+    return alerts
+
+# --- 5. Main Scheduler Loop ---
+
+def main_loop():
+    current_day = None
+    alerts = []
+
+    send_alert("🕌🔔🕌 Salah System Online", "Connected to Masjid Noor (Toller Lane) & Masjid Umar.")
 
     while True:
         now = datetime.now()
-        
-        if current_date != now.date():
-            print(f"\n--- Loading times for {now.strftime('%d/%m/%Y')} ---")
+
+        # Re-fetch and re-arm every midnight (or at container launch)
+        if current_day != now.date():
+            print(f"\n[{now.strftime('%H:%M:%S')}] Date changed ({now.date()}). Scraping fresh prayer times...")
+            current_day = now.date()
+            alerts = []
+
             noor = fetch_masjid_noor()
             umar = fetch_masjid_umar()
-            print(f"Masjid Noor (Toller Lane): {noor}")
-            print(f"Masjid Umar (Girlington):  {umar}")
-            
-            alerts = []
-            for m_name, schedule in [("Masjid Noor", noor), ("Masjid Umar", umar)]:
-                for prayer, t_str in schedule.items():
-                    is_pm = prayer in ["Dhuhr", "Asr", "Maghrib", "Isha"]
-                    jamat_dt = parse_to_dt(t_str, is_pm)
-                    if not jamat_dt:
-                        continue
-                    
-                    alerts.append({"dt": jamat_dt - timedelta(minutes=30), "prayer": prayer, "mins": 30, "t": t_str, "m": m_name, "fired": False})
-                    alerts.append({"dt": jamat_dt - timedelta(minutes=15), "prayer": prayer, "mins": 15, "t": t_str, "m": m_name, "fired": False})
-            
-            current_date = now.date()
-            print(f"Armed {len(alerts)} alerts for today. Listening...")
 
+            print(f"Masjid Noor (Toller Lane): {noor}")
+            print(f"Masjid Umar: {umar}")
+
+            alerts.extend(build_alerts_for_mosque("Masjid Noor", noor, current_day))
+            alerts.extend(build_alerts_for_mosque("Masjid Umar", umar, current_day))
+
+            print(f"[{now.strftime('%H:%M:%S')}] Armed {len(alerts)} alerts for today. Listening...")
+
+        # Fire alerts
         for a in alerts:
-            if not a["fired"] and now >= a["dt"] and now < (a["dt"] + timedelta(minutes=5)):
-                send_alert(f"🕌 {a['prayer']} in {a['mins']}m ({a['m']})", f"{a['prayer']} Jama'ah is at {a['t']} at {a['m']}.")
+            if not a["fired"] and a["dt"] <= now < (a["dt"] + timedelta(minutes=10)):
+                send_alert(a["title"], a["message"])
                 a["fired"] = True
 
         time.sleep(20)
-def keep_alive():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), BaseHTTPRequestHandler)
-    server.serve_forever()
-
 
 if __name__ == "__main__":
-    threading.Thread(target=keep_alive, daemon=True).start()
-    run()
+    # Start the HTTP server thread so Render stays alive
+    server_thread = threading.Thread(target=start_server, daemon=True)
+    server_thread.start()
 
+    # Run the notification loop
+    main_loop()
