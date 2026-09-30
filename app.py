@@ -3,11 +3,17 @@ import sys
 import time
 import threading
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 
+UK_TZ = ZoneInfo("Europe/London")
+
+def get_uk_now():
+    return datetime.now(UK_TZ)
+
 def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+    print(f"[{get_uk_now().strftime('%Y-%m-%d %H:%M:%S %Z')}] {msg}", flush=True)
 
 # --- 1. Keep-Alive HTTP Server (for Render & cron-job.org) ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -53,18 +59,16 @@ def send_alert(title, message):
 
 # --- 3. Dynamic Bradford Maghrib (Sunset) ---
 def get_daily_maghrib(target_date):
-    """Fetches exact daily sunset for Bradford coordinates."""
     try:
         api_url = f"https://api.aladhan.com/v1/timingsByCity/{target_date.strftime('%d-%m-%Y')}?city=Bradford&country=GB&method=15"
         r = requests.get(api_url, timeout=6).json()
-        return r["data"]["timings"].get("Maghrib", "18:45")
+        return r["data"]["timings"].get("Maghrib", "18:49")
     except Exception:
-        return "18:45"
+        return "18:49"
 
-# --- 4. Official Printed Timetable Lookup Engines ---
+# --- 4. Official Printed Timetables ---
 
 def get_masjid_noor_times(target_date):
-    """Masjid Noor (Toller Lane, Bradford) official printed schedule."""
     m = target_date.month
     d = target_date.day
     maghrib = get_daily_maghrib(target_date)
@@ -144,7 +148,6 @@ def get_masjid_noor_times(target_date):
     return {"Fajr": fajr, "Dhuhr": dhuhr, "Asr": asr, "Maghrib": maghrib, "Isha": isha}
 
 def get_masjid_umar_times(target_date):
-    """Masjid E Umar (Girlington) official printed 2026 calendar."""
     m = target_date.month
     d = target_date.day
     maghrib = get_daily_maghrib(target_date)
@@ -237,7 +240,7 @@ def get_masjid_umar_times(target_date):
 
     return {"Fajr": fajr, "Dhuhr": dhuhr, "Asr": asr, "Maghrib": maghrib, "Isha": isha}
 
-# --- 5. Alert Builder ---
+# --- 5. Alert Builder (Timezone Aware) ---
 
 def build_alerts(mosque_name, prayer_dict, target_date):
     alerts = []
@@ -252,7 +255,7 @@ def build_alerts(mosque_name, prayer_dict, target_date):
             if prayer in ["Dhuhr", "Asr", "Maghrib", "Isha"] and hour < 11:
                 hour += 12
 
-            prayer_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
+            prayer_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=UK_TZ)
             clean_time_str = prayer_dt.strftime("%H:%M")
 
             alerts.append({
@@ -277,14 +280,14 @@ def main_loop():
     current_day = None
     alerts = []
 
-    send_alert("🕌 Salah System Active", "Official printed timetables loaded for Noor & Umar.")
+    send_alert("🕌 Salah System Active", "Timezone locked to UK (BST/GMT).")
 
     while True:
         try:
-            now = datetime.now()
+            now = get_uk_now()
 
             if current_day != now.date():
-                log(f"Loading scheduled times for date: {now.date()}...")
+                log(f"Loading scheduled times for UK date: {now.date()}...")
                 current_day = now.date()
                 alerts = []
 
@@ -297,7 +300,7 @@ def main_loop():
                 alerts.extend(build_alerts("Masjid Noor", noor_times, current_day))
                 alerts.extend(build_alerts("Masjid Umar", umar_times, current_day))
 
-                log(f"Armed {len(alerts)} alerts for today. Listening...")
+                log(f"Armed {len(alerts)} UK alerts. Listening...")
 
             for a in alerts:
                 if not a["fired"] and a["dt"] <= now < (a["dt"] + timedelta(minutes=10)):
@@ -305,7 +308,7 @@ def main_loop():
                     a["fired"] = True
 
         except Exception as err:
-            log(f"Unexpected loop exception caught: {err}")
+            log(f"Unexpected loop exception: {err}")
 
         time.sleep(25)
 
