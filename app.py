@@ -3,17 +3,11 @@ import sys
 import time
 import threading
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 
-UK_TZ = ZoneInfo("Europe/London")
-
-def get_uk_now():
-    return datetime.now(UK_TZ)
-
 def log(msg):
-    print(f"[{get_uk_now().strftime('%Y-%m-%d %H:%M:%S %Z')}] {msg}", flush=True)
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 # --- 1. Keep-Alive HTTP Server (for Render & cron-job.org) ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -59,16 +53,20 @@ def send_alert(title, message):
 
 # --- 3. Dynamic Bradford Maghrib (Sunset) ---
 def get_daily_maghrib(target_date):
+    """Fetches exact daily sunset for Bradford coordinates."""
     try:
         api_url = f"https://api.aladhan.com/v1/timingsByCity/{target_date.strftime('%d-%m-%Y')}?city=Bradford&country=GB&method=15"
         r = requests.get(api_url, timeout=6).json()
-        return r["data"]["timings"].get("Maghrib", "18:49")
+        return r["data"]["timings"].get("Maghrib", "18:45")
     except Exception:
-        return "18:49"
+        return "18:45"
 
-# --- 4. Official Printed Timetables ---
+# --- 4. Official Printed Timetable Lookup Engines ---
 
 def get_masjid_noor_times(target_date):
+    """
+    Masjid Noor (Toller Lane, Bradford) official printed schedule.
+    """
     m = target_date.month
     d = target_date.day
     maghrib = get_daily_maghrib(target_date)
@@ -88,7 +86,7 @@ def get_masjid_noor_times(target_date):
             fajr, dhuhr, asr, isha = "06:00", "12:30", "16:30", "20:00"
         elif d <= 28:
             fajr, dhuhr, asr, isha = "05:45", "12:30", "16:45", "20:15"
-        else:
+        else:  # BST starts last Sunday
             fajr, dhuhr, asr, isha = "06:15", "13:30", "18:00", "21:30"
     elif m == 4:
         dhuhr = "13:30"
@@ -121,6 +119,7 @@ def get_masjid_noor_times(target_date):
         asr = "18:00" if d <= 15 else "17:45"
         isha = "21:00" if d <= 15 else "20:30"
     elif m == 10:
+        # Matches Masjid Noor October printed timetable exactly
         dhuhr = "13:30" if d < 30 else "12:30"
         if d < 8:
             fajr, asr, isha = "06:30", "17:15", "20:15"
@@ -130,7 +129,7 @@ def get_masjid_noor_times(target_date):
             fajr, asr, isha = "07:00", "16:45", "19:45"
         elif d < 30:
             fajr, asr, isha = "07:15", "16:30", "19:45"
-        else:
+        else: # GMT resumes
             fajr, asr, isha = "06:45", "15:30", "19:00"
     elif m == 11:
         dhuhr = "12:30"
@@ -148,6 +147,9 @@ def get_masjid_noor_times(target_date):
     return {"Fajr": fajr, "Dhuhr": dhuhr, "Asr": asr, "Maghrib": maghrib, "Isha": isha}
 
 def get_masjid_umar_times(target_date):
+    """
+    Masjid E Umar (Girlington) official printed 2026 calendar.
+    """
     m = target_date.month
     d = target_date.day
     maghrib = get_daily_maghrib(target_date)
@@ -168,7 +170,7 @@ def get_masjid_umar_times(target_date):
             fajr = "05:08" if d < 7 else ("04:51" if d < 14 else ("04:33" if d < 21 else "04:09"))
             asr = "16:45" if d < 7 else ("17:00" if d < 14 else ("17:15" if d < 21 else "17:30"))
             isha = "19:45" if d < 7 else ("20:00" if d < 14 else ("20:15" if d < 21 else "20:30"))
-        else:
+        else: # BST Begins March 29
             fajr, dhuhr, asr, isha = "06:00", "13:45", "18:45", "21:35"
     elif m == 4:
         dhuhr = "13:45"
@@ -178,7 +180,7 @@ def get_masjid_umar_times(target_date):
     elif m == 5:
         dhuhr = "13:45"
         fajr = "05:00" if d < 9 else ("04:45" if d < 16 else ("04:30" if d < 23 else "04:15"))
-        asr = "19:45" if d < 9 else "20:00"
+        asr = "19:45" if d < 9 else ("20:00" if d < 23 else "20:00")
         isha = "22:00" if d < 9 else ("22:15" if d < 16 else ("22:30" if d < 23 else "22:45"))
     elif m == 6:
         dhuhr = "13:45"
@@ -197,30 +199,16 @@ def get_masjid_umar_times(target_date):
         isha = "22:10" if d < 8 else ("22:00" if d < 15 else ("21:40" if d < 22 else ("21:20" if d < 29 else "21:00")))
     elif m == 9:
         dhuhr = "13:45"
-        if d < 5:
-            fajr, asr, isha = "05:45", "19:00", "21:40"
-        elif d < 12:
-            fajr, asr, isha = "06:00", "18:30", "21:25"
-        elif d < 19:
-            fajr, asr, isha = "06:00", "18:15", "21:15"
-        elif d < 26:
-            fajr, asr, isha = "06:15", "18:00", "21:00"
-        else:
-            fajr, asr, isha = "06:30", "17:45", "20:40"
+        fajr = "05:45" if d < 5 else ("06:00" if d < 12 else ("06:15" if d < 19 else ("06:15" if d < 26 else "06:30")))
+        asr = "19:00" if d < 5 else ("18:45" if d < 12 else ("18:30" if d < 19 else ("18:15" if d < 26 else "18:00")))
+        isha = "21:40" if d < 5 else ("21:25" if d < 12 else ("21:15" if d < 19 else ("21:00" if d < 26 else "20:45")))
     elif m == 10:
         if d < 25:
             dhuhr = "13:45"
-            if d < 3:
-                fajr, asr, isha = "06:30", "17:45", "20:40"
-            elif d < 10:
-                fajr, asr, isha = "06:45", "17:30", "20:20"
-            elif d < 17:
-                fajr, asr, isha = "07:00", "17:15", "20:00"
-            elif d < 24:
-                fajr, asr, isha = "07:15", "17:00", "19:45"
-            else:
-                fajr, asr, isha = "07:15", "16:45", "19:30"
-        else:
+            fajr = "06:30" if d < 3 else ("06:45" if d < 10 else ("07:00" if d < 17 else ("07:15" if d < 24 else "07:15")))
+            asr = "17:45" if d < 3 else ("17:30" if d < 10 else ("17:15" if d < 17 else ("17:00" if d < 24 else "16:45")))
+            isha = "20:40" if d < 3 else ("20:30" if d < 10 else ("20:15" if d < 17 else ("20:00" if d < 24 else "19:50")))
+        else: # GMT Resumes October 25
             dhuhr = "12:45"
             fajr = "06:30" if d < 31 else "06:40"
             asr = "15:45" if d < 31 else "15:30"
@@ -240,7 +228,7 @@ def get_masjid_umar_times(target_date):
 
     return {"Fajr": fajr, "Dhuhr": dhuhr, "Asr": asr, "Maghrib": maghrib, "Isha": isha}
 
-# --- 5. Alert Builder (Timezone Aware) ---
+# --- 5. Alert Builder ---
 
 def build_alerts(mosque_name, prayer_dict, target_date):
     alerts = []
@@ -255,7 +243,7 @@ def build_alerts(mosque_name, prayer_dict, target_date):
             if prayer in ["Dhuhr", "Asr", "Maghrib", "Isha"] and hour < 11:
                 hour += 12
 
-            prayer_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute, tzinfo=UK_TZ)
+            prayer_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
             clean_time_str = prayer_dt.strftime("%H:%M")
 
             alerts.append({
@@ -280,14 +268,14 @@ def main_loop():
     current_day = None
     alerts = []
 
-    send_alert("🕌 Salah System Active", "Timezone locked to UK (BST/GMT).")
+    send_alert("🕌 Salah System Active", "Official printed timetables loaded for Noor & Umar.")
 
     while True:
         try:
-            now = get_uk_now()
+            now = datetime.now()
 
             if current_day != now.date():
-                log(f"Loading scheduled times for UK date: {now.date()}...")
+                log(f"Loading scheduled times for date: {now.date()}...")
                 current_day = now.date()
                 alerts = []
 
@@ -300,7 +288,7 @@ def main_loop():
                 alerts.extend(build_alerts("Masjid Noor", noor_times, current_day))
                 alerts.extend(build_alerts("Masjid Umar", umar_times, current_day))
 
-                log(f"Armed {len(alerts)} UK alerts. Listening...")
+                log(f"Armed {len(alerts)} alerts for today. Listening...")
 
             for a in alerts:
                 if not a["fired"] and a["dt"] <= now < (a["dt"] + timedelta(minutes=10)):
@@ -308,7 +296,7 @@ def main_loop():
                     a["fired"] = True
 
         except Exception as err:
-            log(f"Unexpected loop exception: {err}")
+            log(f"Unexpected loop exception caught: {err}")
 
         time.sleep(25)
 
