@@ -199,20 +199,36 @@ def get_masjid_umar_times(target_date):
         isha = "22:10" if d < 8 else ("22:00" if d < 15 else ("21:40" if d < 22 else ("21:20" if d < 29 else "21:00")))
     elif m == 9:
         dhuhr = "13:45"
-        fajr = "05:45" if d < 5 else ("06:00" if d < 12 else ("06:15" if d < 19 else ("06:15" if d < 26 else "06:30")))
-        asr = "19:00" if d < 5 else ("18:45" if d < 12 else ("18:30" if d < 19 else ("18:15" if d < 26 else "18:00")))
-        isha = "21:40" if d < 5 else ("21:25" if d < 12 else ("21:15" if d < 19 else ("21:00" if d < 26 else "20:45")))
+        if d < 5:
+            fajr, asr, isha = "05:45", "19:00", "21:40"
+        elif d < 12:
+            fajr, asr, isha = "06:00", "18:30", "21:25"
+        elif d < 19:
+            fajr, asr, isha = "06:00", "18:15", "21:15"
+        elif d < 26:
+            fajr, asr, isha = "06:15", "18:00", "21:00"
+        else: # 26th to 30th September
+            fajr, asr, isha = "06:30", "17:45", "20:40"
+
     elif m == 10:
         if d < 25:
             dhuhr = "13:45"
-            fajr = "06:30" if d < 3 else ("06:45" if d < 10 else ("07:00" if d < 17 else ("07:15" if d < 24 else "07:15")))
-            asr = "17:45" if d < 3 else ("17:30" if d < 10 else ("17:15" if d < 17 else ("17:00" if d < 24 else "16:45")))
-            isha = "20:40" if d < 3 else ("20:30" if d < 10 else ("20:15" if d < 17 else ("20:00" if d < 24 else "19:50")))
-        else: # GMT Resumes October 25
+            if d < 3:
+                fajr, asr, isha = "06:30", "17:45", "20:40"
+            elif d < 10:
+                fajr, asr, isha = "06:45", "17:30", "20:20"
+            elif d < 17:
+                fajr, asr, isha = "07:00", "17:15", "20:00"
+            elif d < 24:
+                fajr, asr, isha = "07:15", "17:00", "19:45"
+            else:
+                fajr, asr, isha = "07:15", "16:45", "19:30"
+        else: # GMT Resumes October 25 (Clocks go back)
             dhuhr = "12:45"
             fajr = "06:30" if d < 31 else "06:40"
             asr = "15:45" if d < 31 else "15:30"
             isha = "18:30"
+
     elif m == 11:
         dhuhr = "12:45"
         fajr = "06:40" if d < 7 else ("06:45" if d < 14 else ("07:00" if d < 21 else ("07:10" if d < 28 else "07:15")))
